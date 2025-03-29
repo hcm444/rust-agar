@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agar.io Clone</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #game-canvas {
+            display: block;
+            background-color: #ffffff;
+        }
+        
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        #leaderboard {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            min-width: 150px;
+        }
+        
+        #leaderboard h3 {
+            margin: 0 0 10px 0;
+            text-align: center;
+        }
+        
+        #leaderboard-list {
+            margin: 0;
+            padding: 0;
+            list-style-type: none;
+        }
+        
+        #leaderboard-list li {
+            margin-bottom: 5px;
+        }
+        
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        #game-over button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 10px 0;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            max-width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas"></canvas>
+        <div id="status">Size: <span id="player-size">0</span></div>
+        <div id="leaderboard">
+            <h3>Leaderboard</h3>
+            <ol id="leaderboard-list"></ol>
+        </div>
+        <div id="instructions">
+            <p><strong>How to play:</strong></p>
+            <p>- Move your mouse to control your player</p>
+            <p>- Eat food (small dots) to grow</p>
+            <p>- If you are 20% bigger than another player, you can eat them</p>
+            <p>- Larger players move slower</p>
+            <p>- Watch out for players bigger than you!</p>
+        </div>
+        <div id="game-over">
+            <h2>Game Over</h2>
+            <p>Your final size: <span id="final-size">0</span></p>
+            <button id="restart-button">Play Again</button>
+        </div>
+    </div>
+
+    <script>
+        // Game variables
+        const WORLD_WIDTH = 3000;
+        const WORLD_HEIGHT = 3000;
+        let socket;
+        let connected = false;
+        let playerId;
+        let players = {};
+        let food = {};
+        let canvas;
+        let ctx;
+        let cameraX = 0;
+        let cameraY = 0;
+        let mouseX = 0;
+        let mouseY = 0;
+        let targetX = 0;
+        let targetY = 0;
+        let finalSize = 0;
+        
+        // Initialize the game
+        function init() {
+            canvas = document.getElementById('game-canvas');
+            ctx = canvas.getContext('2d');
+            
+            // Set canvas dimensions
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            // Set up WebSocket connection
+            setupWebSocket();
+            
+            // Set up input handlers
+            setupInputHandlers();
+            
+            // Start the game loop
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Resize canvas to fit window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        
+        // Set up WebSocket connection
+        function setupWebSocket() {
+            // Use secure WebSocket if on HTTPS
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            console.log(`Connecting to WebSocket at ${wsUrl}`);
+            socket = new WebSocket(wsUrl);
+            
+            socket.onopen = function() {
+                console.log('Connected to server');
+                connected = true;
+                
+                // Hide game over screen if it's visible
+                document.getElementById('game-over').style.display = 'none';
+            };
+            
+            socket.onclose = function() {
+                console.log('Disconnected from server');
+                connected = false;
+                setTimeout(setupWebSocket, 1000); // Try to reconnect after 1 second
+            };
+            
+            socket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+            
+            socket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    // Check if it's a game over message
+                    if (data.type === 'game_over') {
+                        handleGameOver();
+                        return;
+                    }
+                    
+                    // Regular game state update
+                    players = data.players || {};
+                    food = data.food || {};
+                    
+                    // Find our player
+                    if (Object.keys(players).length > 0 && !playerId) {
+                        playerId = Object.keys(players)[0];
+                    }
+                    
+                    // Update leaderboard
+                    updateLeaderboard();
+                    
+                    // Update player size display
+                    if (playerId && players[playerId]) {
+                        const size = Math.round(players[playerId].size);
+                        document.getElementById('player-size').textContent = size;
+                        finalSize = size; // Store the current size in case of game over
+                    }
+                } catch (e) {
+                    console.error('Error parsing game state:', e);
+                }
+            };
+        }
+        
+        // Handle game over
+        function handleGameOver() {
+            // Update final size
+            document.getElementById('final-size').textContent = finalSize;
+            
+            // Show game over screen
+            document.getElementById('game-over').style.display = 'block';
+            
+            // Reset player ID
+            playerId = null;
+        }
+        
+        // Set up input handlers
+        function setupInputHandlers() {
+            // Mouse move handler
+            canvas.addEventListener('mousemove', function(e) {
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+            });
+            
+            // Touch move handler
+            canvas.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+                mouseX = e.touches[0].clientX;
+                mouseY = e.touches[0].clientY;
+            }, { passive: false });
+            
+            // Restart button
+            document.getElementById('restart-button').addEventListener('click', function() {
+                document.getElementById('game-over').style.display = 'none';
+                setupWebSocket();
+            });
+        }
+        
+        // Send player movement to server
+        function sendMovement() {
+            if (!connected || !playerId || !players[playerId]) return;
+            
+            // Calculate target position in world coordinates
+            const player = players[playerId];
+            const viewportCenterX = canvas.width / 2;
+            const viewportCenterY = canvas.height / 2;
+            
+            // Convert mouse position to world coordinates
+            const dx = mouseX - viewportCenterX;
+            const dy = mouseY - viewportCenterY;
+            
+            // Normalize direction vector
+            const length = Math.sqrt(dx * dx + dy * dy);
+            const normalizedDx = length > 0 ? dx / length : 0;
+            const normalizedDy = length > 0 ? dy / length : 0;
+            
+            // Set target position with some distance ahead of player
+            const moveSpeed = 5.0 * (1.0 / (1.0 + player.size / 100.0)); // Slower as player gets bigger
+            targetX = player.x + normalizedDx * moveSpeed * 10;
+            targetY = player.y + normalizedDy * moveSpeed * 10;
+            
+            // Keep player within world bounds
+            targetX = Math.max(player.size, Math.min(WORLD_WIDTH - player.size, targetX));
+            targetY = Math.max(player.size, Math.min(WORLD_HEIGHT - player.size, targetY));
+            
+            // Send movement to server
+            if (connected) {
+                socket.send(JSON.stringify({
+                    x: targetX,
+                    y: targetY
+                }));
+            }
+        }
+        
+        // Update leaderboard
+        function updateLeaderboard() {
+            const leaderboardList = document.getElementById('leaderboard-list');
+            leaderboardList.innerHTML = '';
+            
+            // Sort players by size
+            const sortedPlayers = Object.values(players).sort((a, b) => b.size - a.size);
+            
+            // Display top 10 players
+            for (let i = 0; i < Math.min(10, sortedPlayers.length); i++) {
+                const player = sortedPlayers[i];
+                const li = document.createElement('li');
+                li.textContent = `Player ${player.id.substring(0, 5)}: ${Math.round(player.size)}`;
+                
+                // Highlight current player
+                if (player.id === playerId) {
+                    li.style.fontWeight = 'bold';
+                }
+                
+                leaderboardList.appendChild(li);
+            }
+        }
+        
+        // Draw the game world
+        function drawGame() {
+            if (!playerId || !players[playerId]) return;
+            
+            const player = players[playerId];
+            
+            // Set camera position to follow player
+            cameraX = player.x - canvas.width / 2;
+            cameraY = player.y - canvas.height / 2;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid
+            drawGrid();
+            
+            // Draw food
+            drawFood();
+            
+            // Draw players
+            drawPlayers();
+            
+            // Draw world border
+            drawWorldBorder();
+        }
+        
+        // Draw grid
+        function drawGrid() {
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            
+            const gridSize = 100;
+            const offsetX = (-cameraX) % gridSize;
+            const offsetY = (-cameraY) % gridSize;
+            
+            ctx.beginPath();
+            
+            // Vertical lines
+            for (let x = offsetX; x < canvas.width; x += gridSize) {
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+            }
+            
+            // Horizontal lines
+            for (let y = offsetY; y < canvas.height; y += gridSize) {
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+            }
+            
+            ctx.stroke();
+        }
+        
+        // Draw food
+        function drawFood() {
+            for (const id in food) {
+                const f = food[id];
+                const screenX = f.x - cameraX;
+                const screenY = f.y - cameraY;
+                
+                // Only draw food that's visible on screen
+                if (screenX + 10 < 0 || screenX - 10 > canvas.width || 
+                    screenY + 10 < 0 || screenY - 10 > canvas.height) {
+                    continue;
+                }
+                
+                // Draw food
+                ctx.fillStyle = f.color;
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, 5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        // Draw players
+        function drawPlayers() {
+            const currentPlayer = players[playerId];
+            
+            for (const id in players) {
+                const p = players[id];
+                const screenX = p.x - cameraX;
+                const screenY = p.y - cameraY;
+                
+                // Only draw players that are visible on screen
+                if (screenX + p.size < 0 || screenX - p.size > canvas.width || 
+                    screenY + p.size < 0 || screenY - p.size > canvas.height) {
+                    continue;
+                }
+                
+                // Draw player circle
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Add a border for the current player
+                if (id === playerId) {
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+                // Add a red halo for players that can be eaten by the current player
+                else if (currentPlayer && currentPlayer.size > p.size * 1.2) {
+                    ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+                // Add a warning halo for players that can eat the current player
+                else if (currentPlayer && p.size > currentPlayer.size * 1.2) {
+                    ctx.strokeStyle = 'rgba(255, 255, 0, 0.5)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+                
+                // Draw player ID
+                ctx.fillStyle = '#fff';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(id.substring(0, 5), screenX, screenY);
+                
+                // Draw player size below the player
+                ctx.font = '10px Arial';
+                ctx.fillText(Math.round(p.size), screenX, screenY + p.size + 10);
+            }
+        }
+        
+        // Draw world border
+        function drawWorldBorder() {
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 5;
+            
+            const borderX = -cameraX;
+            const borderY = -cameraY;
+            const borderWidth = WORLD_WIDTH;
+            const borderHeight = WORLD_HEIGHT;
+            
+            ctx.strokeRect(borderX, borderY, borderWidth, borderHeight);
+        }
+        
+        // Game loop
+        function gameLoop() {
+            sendMovement();
+            drawGame();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Start the game when page loads
+        window.onload = init;
+    </script>
+</body>
+</html> 
