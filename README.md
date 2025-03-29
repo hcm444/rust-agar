@@ -3,7 +3,6 @@
 A simple multiplayer Agar.io clone built with Rust, Actix, and WebSockets.
 
 ## Features
-
 - Real-time multiplayer gameplay
 - Player movement controlled by mouse
 - Collect food to grow bigger
